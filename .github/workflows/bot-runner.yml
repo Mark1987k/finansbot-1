@@ -3,7 +3,11 @@ name: Finans Bot - Continuous 6-Hour Run
 on:
   schedule:
     - cron: '0 0,6,12,18 * * *'
-  workflow_dispatch: 
+  workflow_dispatch:
+
+concurrency:
+  group: finansbot-runner
+  cancel-in-progress: true 
 
 jobs:
   build-and-run:
