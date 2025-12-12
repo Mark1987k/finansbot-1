@@ -1,0 +1,5 @@
+com\ali\finansbot\config\HttpConfig.class
+com\ali\finansbot\service\TwitterClient.class
+com\ali\finansbot\FinansbotApplication.class
+com\ali\finansbot\scheduler\TweetScheduler.class
+com\ali\finansbot\service\FinansService.class
