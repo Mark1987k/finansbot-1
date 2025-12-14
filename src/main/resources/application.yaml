@@ -13,4 +13,4 @@ server:
 app:
   scheduler:
     enabled: true
-    cron: "0 0,30 * * * *"
+    cron: "0 0 * * * *"
