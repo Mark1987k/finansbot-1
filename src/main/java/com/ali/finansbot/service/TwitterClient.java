@@ -1,138 +1,226 @@
 package com.ali.finansbot.service;
 
+import com.microsoft.playwright.*;
+import com.microsoft.playwright.options.LoadState;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * Twitter (X) API kullanmadan, Playwright browser otomasyonu ile tweet atar.
+ *
+ * Çalışma mantığı:
+ * 1. Daha önce kaydedilmiş auth.json (session/cookie) dosyasını yükler
+ * 2. Chromium tarayıcısını başlatır
+ * 3. x.com'a gider, tweet yazar, "Post" butonuna basar
+ * 4. Session'ı günceller (cookie yenileme)
+ *
+ * İlk kurulumda SessionGenerator ile auth.json oluşturulmalıdır.
+ */
 @Service
 public class TwitterClient {
 
-    private final String apiKey;
-    private final String apiSecret;
-    private final String accessToken;
-    private final String accessTokenSecret;
-    private final WebClient webClient;
+    private final String sessionPath;
+    private final boolean headless;
+
+    /** Tweet gönderimi arasındaki retry sayısı */
+    private static final int MAX_RETRIES = 2;
 
     public TwitterClient(
-            @Value("${twitter.api-key}") String apiKey,
-            @Value("${twitter.api-secret}") String apiSecret,
-            @Value("${twitter.access-token}") String accessToken,
-            @Value("${twitter.access-token-secret}") String accessTokenSecret) {
-        this.apiKey = safe(apiKey);
-        this.apiSecret = safe(apiSecret);
-        this.accessToken = safe(accessToken);
-        this.accessTokenSecret = safe(accessTokenSecret);
-
-        this.webClient = WebClient.builder()
-                .baseUrl("https://api.twitter.com")
-                .build();
+            @Value("${twitter.session-path:auth.json}") String sessionPath,
+            @Value("${twitter.headless:true}") boolean headless) {
+        this.sessionPath = sessionPath;
+        this.headless = headless;
     }
 
+    /**
+     * Playwright ile X.com'a tweet gönderir.
+     *
+     * @param text tweet içeriği (max 280 karakter)
+     */
     public void postTweet(String text) {
+        Path session = Paths.get(sessionPath);
+
+        if (!Files.exists(session)) {
+            System.out.println("[Twitter] ❌ auth.json bulunamadı! Önce SessionGenerator çalıştırın.");
+            System.out.println("[Twitter] Komut: mvn exec:java -Dexec.mainClass=com.ali.finansbot.util.SessionGenerator");
+            return;
+        }
+
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                doPostTweet(text, session);
+                return; // Başarılı
+            } catch (Exception e) {
+                System.out.printf("[Twitter] ❌ Tweet gönderilemedi (deneme %d/%d): %s%n",
+                        attempt, MAX_RETRIES, e.getMessage());
+                if (attempt < MAX_RETRIES) {
+                    sleep(5000); // Retry öncesi bekle
+                }
+            }
+        }
+        System.out.println("[Twitter] ❌ Tüm denemeler başarısız oldu.");
+    }
+
+    private void doPostTweet(String text, Path session) {
+        try (Playwright pw = Playwright.create()) {
+            Browser browser = pw.chromium().launch(
+                    new BrowserType.LaunchOptions()
+                            .setHeadless(headless)
+                            .setArgs(List.of(
+                                    "--disable-blink-features=AutomationControlled",
+                                    "--no-sandbox",
+                                    "--disable-dev-shm-usage"
+                            ))
+            );
+
+            BrowserContext context = browser.newContext(
+                    new Browser.NewContextOptions()
+                            .setStorageStatePath(session)
+                            .setViewportSize(1280, 800)
+                            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                                    "Chrome/131.0.0.0 Safari/537.36")
+                            .setLocale("tr-TR")
+                            .setTimezoneId("Europe/Istanbul")
+            );
+
+            Page page = context.newPage();
+
+            // Navigator.webdriver özelliğini gizle (bot algılama önlemi)
+            page.addInitScript("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})");
+
+            try {
+                // --- 1) Ana sayfaya git ---
+                System.out.println("[Twitter] 🌐 x.com'a gidiliyor...");
+                page.navigate("https://x.com/home", new Page.NavigateOptions()
+                        .setTimeout(30000));
+                page.waitForLoadState(LoadState.NETWORKIDLE);
+
+                humanDelay(2000, 4000);
+
+                // --- 2) Oturum kontrolü ---
+                String currentUrl = page.url();
+                if (currentUrl.contains("/login") || currentUrl.contains("/i/flow/login")) {
+                    System.out.println("[Twitter] ❌ SESSION EXPIRED! auth.json süresi dolmuş.");
+                    System.out.println("[Twitter] ⚠️ SessionGenerator'ı tekrar çalıştırıp yeni auth.json oluşturun.");
+                    System.out.println("[Twitter] Komut: mvn exec:java -Dexec.mainClass=com.ali.finansbot.util.SessionGenerator");
+                    browser.close();
+                    throw new RuntimeException("Session expired — yeniden giriş gerekiyor");
+                }
+
+                // Cookie consent banner varsa kapat
+                dismissCookieBanner(page);
+
+                // --- 3) Tweet compose alanına yaz ---
+                System.out.println("[Twitter] ✏️ Tweet yazılıyor...");
+
+                // Compose alanını bul — x.com'da birden fazla textbox olabilir
+                Locator composeBox = page.locator("div[data-testid='tweetTextarea_0']");
+
+                // Eğer compose box doğrudan görünmüyorsa, "Post" butonuna tıkla
+                if (!composeBox.isVisible()) {
+                    // Ana sayfadaki "What is happening?!" alanına tıkla
+                    Locator tweetInput = page.locator("div[data-testid='tweetTextarea_0'], " +
+                            "div[role='textbox'][data-testid]");
+                    if (tweetInput.isVisible()) {
+                        tweetInput.click();
+                    } else {
+                        // Compose post sayfasına doğrudan git
+                        page.navigate("https://x.com/compose/post");
+                        page.waitForLoadState(LoadState.NETWORKIDLE);
+                        humanDelay(1500, 3000);
+                    }
+                    composeBox = page.locator("div[data-testid='tweetTextarea_0']");
+                }
+
+                composeBox.waitFor(new Locator.WaitForOptions().setTimeout(10000));
+                composeBox.click();
+                humanDelay(500, 1000);
+
+                // Karakter karakter yazma — daha doğal görünür
+                typeHumanLike(page, composeBox, text);
+
+                humanDelay(1000, 2000);
+
+                // --- 4) Post butonuna bas ---
+                System.out.println("[Twitter] 📤 Tweet gönderiliyor...");
+                Locator postButton = page.locator("button[data-testid='tweetButton']");
+                postButton.waitFor(new Locator.WaitForOptions().setTimeout(5000));
+                postButton.click();
+
+                // Tweet'in gönderildiğini bekle
+                humanDelay(3000, 5000);
+
+                // --- 5) Başarı kontrolü ---
+                // Post sonrası hata mesajı var mı kontrol et
+                Locator errorToast = page.locator("[data-testid='toast']");
+                if (errorToast.isVisible()) {
+                    String toastText = errorToast.textContent();
+                    if (toastText != null && toastText.toLowerCase().contains("error")) {
+                        throw new RuntimeException("Tweet hatası: " + toastText);
+                    }
+                }
+
+                // --- 6) Session güncelle ---
+                context.storageState(new BrowserContext.StorageStateOptions()
+                        .setPath(session));
+                System.out.println("[Twitter] 💾 Session güncellendi.");
+
+                System.out.println("[Twitter] ✅ Tweet başarıyla gönderildi! (Playwright)");
+
+            } finally {
+                browser.close();
+            }
+        }
+    }
+
+    /**
+     * İnsan benzeri yazma — karakter karakter, rastgele gecikmelerle
+     */
+    private void typeHumanLike(Page page, Locator target, String text) {
+        for (char c : text.toCharArray()) {
+            target.pressSequentially(String.valueOf(c),
+                    new Locator.PressSequentiallyOptions()
+                            .setDelay(ThreadLocalRandom.current().nextInt(20, 80)));
+        }
+    }
+
+    /**
+     * Cookie consent banner'ını kapatır (varsa)
+     */
+    private void dismissCookieBanner(Page page) {
         try {
-            // Yeni API endpoint (V2)
-            final String url = "https://api.twitter.com/2/tweets";
-            final String nonce = UUID.randomUUID().toString().replace("-", "");
-            final long now = ZonedDateTime.now(ZoneOffset.UTC).toEpochSecond();
-            final String timestamp = String.valueOf(now);
-
-            // OAuth 1.0a parametreleri
-            Map<String, String> oauth = new LinkedHashMap<>();
-            oauth.put("oauth_consumer_key", apiKey);
-            oauth.put("oauth_nonce", nonce);
-            oauth.put("oauth_signature_method", "HMAC-SHA1");
-            oauth.put("oauth_timestamp", timestamp);
-            oauth.put("oauth_token", accessToken);
-            oauth.put("oauth_version", "1.0");
-
-            // Request body parametresi (status artık 'text')
-            Map<String, String> bodyParams = new LinkedHashMap<>();
-            bodyParams.put("text", text);
-
-            // === BASE STRING oluştur ===
-            List<AbstractMap.SimpleEntry<String, String>> all = new ArrayList<>();
-            oauth.forEach((k, v) -> all.add(new AbstractMap.SimpleEntry<>(k, v)));
-            // not: body parametresi base string'e dahil EDİLMEZ, çünkü V2 JSON payload
-            // gönderiyor
-            List<AbstractMap.SimpleEntry<String, String>> encoded = new ArrayList<>();
-            for (var e : all) {
-                encoded.add(new AbstractMap.SimpleEntry<>(encode(e.getKey()), encode(e.getValue())));
+            // X.com bazen cookie consent gösteriyor
+            Locator cookieBtn = page.locator("div[role='button']:has-text('Refuse non-essential cookies'), " +
+                    "div[role='button']:has-text('Gerekli olmayan çerezleri reddet')");
+            if (cookieBtn.isVisible()) {
+                cookieBtn.click();
+                humanDelay(1000, 2000);
+                System.out.println("[Twitter] 🍪 Cookie banner kapatıldı.");
             }
-            encoded.sort((a, b) -> {
-                int c = a.getKey().compareTo(b.getKey());
-                return (c != 0) ? c : a.getValue().compareTo(b.getValue());
-            });
-
-            StringBuilder norm = new StringBuilder();
-            for (int i = 0; i < encoded.size(); i++) {
-                var e = encoded.get(i);
-                norm.append(e.getKey()).append("=").append(e.getValue());
-                if (i < encoded.size() - 1)
-                    norm.append("&");
-            }
-
-            String baseString = "POST&" + encode(url) + "&" + encode(norm.toString());
-            String signingKey = encode(apiSecret) + "&" + encode(accessTokenSecret);
-            String signature = hmacSha1(baseString, signingKey);
-            oauth.put("oauth_signature", signature);
-
-            String authHeader = buildSortedAuthHeader(oauth);
-
-            Map<String, Object> payload = Map.of("text", text);
-
-            webClient.post()
-                    .uri("/2/tweets")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .header("Authorization", authHeader)
-                    .bodyValue(payload)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
-
-            System.out.println("[Twitter] ✅ Tweet sent successfully");
-
-        } catch (Exception e) {
-            System.out.println("[Twitter] ❌ Tweet gönderilemedi: " + e.getMessage());
-            e.printStackTrace();
+        } catch (Exception ignored) {
+            // Banner yoksa sorun değil
         }
     }
 
-    private static String buildSortedAuthHeader(Map<String, String> oauth) {
-        TreeMap<String, String> sorted = new TreeMap<>(oauth);
-        StringBuilder h = new StringBuilder("OAuth ");
-        Iterator<Map.Entry<String, String>> it = sorted.entrySet().iterator();
-        while (it.hasNext()) {
-            var e = it.next();
-            h.append(encode(e.getKey())).append("=\"").append(encode(e.getValue())).append("\"");
-            if (it.hasNext())
-                h.append(", ");
+    /**
+     * İnsan benzeri rastgele bekleme
+     */
+    private void humanDelay(int minMs, int maxMs) {
+        sleep(ThreadLocalRandom.current().nextInt(minMs, maxMs));
+    }
+
+    private void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        return h.toString();
-    }
-
-    private static String hmacSha1(String data, String key) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA1");
-        mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA1"));
-        return Base64.getEncoder().encodeToString(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static String encode(String v) {
-        return URLEncoder.encode(v, StandardCharsets.UTF_8)
-                .replace("+", "%20")
-                .replace("*", "%2A")
-                .replace("%7E", "~");
-    }
-
-    private static String safe(String s) {
-        return s == null ? null : s.trim();
     }
 }
