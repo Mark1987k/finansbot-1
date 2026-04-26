@@ -149,9 +149,16 @@ public class TwitterClient {
 
                 // --- 4) Post butonuna bas ---
                 System.out.println("[Twitter] 📤 Tweet gönderiliyor...");
-                Locator postButton = page.locator("button[data-testid='tweetButton']");
-                postButton.waitFor(new Locator.WaitForOptions().setTimeout(5000));
-                postButton.click();
+                try {
+                    Locator postButton = page.locator("button[data-testid='tweetButtonInline'], button[data-testid='tweetButton']").first();
+                    postButton.waitFor(new Locator.WaitForOptions().setTimeout(10000));
+                    postButton.click();
+                } catch (Exception e) {
+                    System.out.println("[Twitter] ⚠️ Post butonu bulunamadı, Ctrl+Enter ile gönderim deneniyor...");
+                    // Kutuya odaklan ve klavye kısayoluyla gönder (Kurşun geçirmez yöntem)
+                    composeBox.focus();
+                    composeBox.press("Control+Enter");
+                }
 
                 // Tweet'in gönderildiğini bekle
                 humanDelay(3000, 5000);
