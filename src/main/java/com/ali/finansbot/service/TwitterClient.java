@@ -190,11 +190,13 @@ public class TwitterClient {
      * İnsan benzeri yazma — karakter karakter, rastgele gecikmelerle
      */
     private void typeHumanLike(Page page, Locator target, String text) {
-        for (char c : text.toCharArray()) {
-            target.pressSequentially(String.valueOf(c),
+        // Emojilerin (Surrogate Pairs) bozulmaması için charArray yerine codePoints kullanıyoruz
+        text.codePoints().forEach(cp -> {
+            String character = new String(Character.toChars(cp));
+            target.pressSequentially(character,
                     new Locator.PressSequentiallyOptions()
                             .setDelay(ThreadLocalRandom.current().nextInt(20, 80)));
-        }
+        });
     }
 
     /**
