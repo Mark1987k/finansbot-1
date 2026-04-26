@@ -25,10 +25,14 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
+    - name: Install Playwright Chromium
+      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
+
+    - name: Restore Twitter Session
+      run: echo "${{ secrets.TWITTER_SESSION_B64 }}" | base64 -d > auth.json
+
     - name: Start Spring Boot Application
-      run: mvn spring-boot:run
+      run: xvfb-run --auto-servernum mvn spring-boot:run
       env:
-        TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-        TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-        TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
-        TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+        TWITTER_SESSION_PATH: auth.json
+        TWITTER_HEADLESS: "false"
