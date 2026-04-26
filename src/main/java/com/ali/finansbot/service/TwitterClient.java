@@ -100,9 +100,9 @@ public class TwitterClient {
                 System.out.println("[Twitter] 🌐 x.com'a gidiliyor...");
                 page.navigate("https://x.com/home", new Page.NavigateOptions()
                         .setTimeout(60000));
-                page.waitForLoadState(LoadState.NETWORKIDLE);
-
-                humanDelay(2000, 4000);
+                
+                // NETWORKIDLE KALDIRILDI - Twitter arka planda sürekli veri çektiği için timeout'a düşürüyordu.
+                humanDelay(3000, 5000);
 
                 // --- 2) Oturum kontrolü ---
                 String currentUrl = page.url();
@@ -132,9 +132,8 @@ public class TwitterClient {
                         tweetInput.click();
                     } else {
                         // Compose post sayfasına doğrudan git
-                        page.navigate("https://x.com/compose/post");
-                        page.waitForLoadState(LoadState.NETWORKIDLE);
-                        humanDelay(1500, 3000);
+                        page.navigate("https://x.com/compose/post", new Page.NavigateOptions().setTimeout(60000));
+                        humanDelay(2000, 4000);
                     }
                     composeBox = page.locator("div[data-testid='tweetTextarea_0']");
                 }
