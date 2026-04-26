@@ -99,7 +99,7 @@ public class TwitterClient {
                 // --- 1) Ana sayfaya git ---
                 System.out.println("[Twitter] 🌐 x.com'a gidiliyor...");
                 page.navigate("https://x.com/home", new Page.NavigateOptions()
-                        .setTimeout(30000));
+                        .setTimeout(60000));
                 page.waitForLoadState(LoadState.NETWORKIDLE);
 
                 humanDelay(2000, 4000);
