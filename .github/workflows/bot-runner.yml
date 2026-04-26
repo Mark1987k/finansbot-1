@@ -25,8 +25,11 @@ jobs:
         distribution: 'temurin'
         cache: 'maven'
 
+    - name: Install Playwright Dependencies
+      run: sudo npx playwright install-deps chromium
+
     - name: Install Playwright Chromium
-      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
+      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install chromium"
 
     - name: Restore Twitter Session
       run: echo "${{ secrets.TWITTER_SESSION_B64 }}" | base64 -d > auth.json
