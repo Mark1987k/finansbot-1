@@ -120,14 +120,13 @@ public class TwitterClient {
                 // --- 3) Tweet compose alanına yaz ---
                 System.out.println("[Twitter] ✏️ Tweet yazılıyor...");
 
-                // Compose alanını bul — x.com'da birden fazla textbox olabilir
-                Locator composeBox = page.locator("div[data-testid='tweetTextarea_0']");
+                // Compose alanını bul — x.com'da birden fazla textbox olabilir (strict mode için .first() şart)
+                Locator composeBox = page.locator("[data-testid='primaryColumn'] div[data-testid='tweetTextarea_0'], div[data-testid='tweetTextarea_0']").first();
 
                 // Eğer compose box doğrudan görünmüyorsa, "Post" butonuna tıkla
                 if (!composeBox.isVisible()) {
                     // Ana sayfadaki "What is happening?!" alanına tıkla
-                    Locator tweetInput = page.locator("div[data-testid='tweetTextarea_0'], " +
-                            "div[role='textbox'][data-testid]");
+                    Locator tweetInput = page.locator("div[data-testid='tweetTextarea_0'], div[role='textbox'][data-testid]").first();
                     if (tweetInput.isVisible()) {
                         tweetInput.click();
                     } else {
@@ -135,7 +134,7 @@ public class TwitterClient {
                         page.navigate("https://x.com/compose/post", new Page.NavigateOptions().setTimeout(60000));
                         humanDelay(2000, 4000);
                     }
-                    composeBox = page.locator("div[data-testid='tweetTextarea_0']");
+                    composeBox = page.locator("div[data-testid='tweetTextarea_0']").first();
                 }
 
                 composeBox.waitFor(new Locator.WaitForOptions().setTimeout(10000));
