@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build-and-run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     
     steps:
@@ -26,7 +26,7 @@ jobs:
         cache: 'maven'
 
     - name: Install Playwright Browsers and Dependencies
-      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps"
+      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
 
     - name: Restore Twitter Session
       run: echo "${{ secrets.TWITTER_SESSION_B64 }}" | base64 -d > auth.json
