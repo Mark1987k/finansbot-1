@@ -3,21 +3,20 @@ name: Finans Bot - Continuous 6-Hour Run
 on:
   schedule:
     - cron: '0 0,6,12,18 * * *' # Yedek tetikleyici
-  workflow_dispatch:           # Otomatik tetikleme için gerekli
+  workflow_dispatch:           # Manuel veya otomatik tetikleme için
 
-# GitHub CLI'ın yeni görev tetikleyebilmesi için gerekli izin
 permissions:
   actions: write
   contents: read
 
 concurrency:
   group: finansbot-runner
-  cancel-in-progress: false # Görevlerin çakışmasını ve birbirini öldürmesini engeller
+  cancel-in-progress: false
 
 jobs:
   build-and-run:
     runs-on: ubuntu-24.04
-    timeout-minutes: 350 # 6 saat (360 dk) dolmadan 350. dakikada güvenle yenisini başlatır
+    timeout-minutes: 360
     
     steps:
     - name: Checkout code
@@ -36,29 +35,29 @@ jobs:
     - name: Restore Twitter Session
       run: echo "${{ secrets.TWITTER_SESSION_B64 }}" | base64 -d > auth.json
 
-    - name: Start Spring Boot Application with Auto-Restart Loop
+    - name: Run Spring Boot Application (5.5 Hours)
       run: |
-        # Bot beklenmedik şekilde çökerse hemen makine kapanmasın, tekrar başlatsın
-        while true; do
-          echo "🚀 Bot başlatılıyor..."
-          xvfb-run --auto-servernum mvn spring-boot:run
-          echo "⚠️ Bot beklenmedik şekilde durdu! 5 saniye içinde yeniden başlatılıyor..."
-          sleep 5
-        done
+        # Botu 5.5 saat (330 dk) çalıştır, süre bitince temizce sıradaki göreve devret
+        timeout -k 15s 330m bash -c '
+          while true; do
+            echo "🚀 Bot başlatılıyor..."
+            xvfb-run --auto-servernum mvn spring-boot:run
+            echo "⚠️ Bot durdu! 5 saniye içinde yeniden başlatılıyor..."
+            sleep 5
+          done
+        ' || true
+        
+        # Süreçleri temizle
+        pkill -f spring-boot 2>/dev/null || true
+        pkill -f Xvfb 2>/dev/null || true
       env:
         TWITTER_SESSION_PATH: auth.json
         TWITTER_HEADLESS: "false"
 
-    # GÖREV DURDUĞU VEYA SÜRE BİTTİĞİ AN YENİSİNİ TETİKLEYEN ADIM:
-    - name: Auto-Trigger Next Run if Stopped
-      if: always()
+    - name: Auto-Trigger Next Run
       run: |
-        # Eğer en az 2 dakika çalıştıysa (derleme hatası değilse), yeni 6 saatlik görevi başlat
-        if [ $SECONDS -gt 120 ]; then
-          echo "🔄 Görev tamamlandı/durdu ($SECONDS sn çalıştı). Yeni 6 saatlik görev anında başlatılıyor..."
-          gh workflow run bot-runner.yml
-        else
-          echo "⚠️ Görev çok kısa sürdü, hata döngüsüne girmemek için otomatik tetiklenmedi."
-        fi
+        echo "🔄 5.5 saatlik görev başarıyla bitti. Yeni görev anında başlatılıyor..."
+        gh workflow run bot-runner.yml --ref main
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
