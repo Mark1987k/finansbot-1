@@ -1,9 +1,10 @@
+
 name: Finans Bot - Continuous 6-Hour Run
 
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *' # Yedek tetikleyici
-  workflow_dispatch:           # Manuel veya otomatik tetikleme için
+    - cron: '13 0,6,12,18 * * *' # UTC; 6 saatlik yedek
+  workflow_dispatch:
 
 permissions:
   actions: write
@@ -17,47 +18,87 @@ jobs:
   build-and-run:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup Java 21 and Maven
-      uses: actions/setup-java@v4
-      with:
-        java-version: '21'
-        distribution: 'temurin'
-        cache: 'maven'
+      - name: Setup Java 21 and Maven
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
 
-    - name: Install Playwright Browsers and Dependencies
-      run: mvn compile exec:java -e -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
-
-    - name: Restore Twitter Session
-      run: echo "${{ secrets.TWITTER_SESSION_B64 }}" | base64 -d > auth.json
-
-    - name: Run Spring Boot Application (5.5 Hours)
-      run: |
-        # Botu 5.5 saat (330 dk) çalıştır, süre bitince temizce sıradaki göreve devret
-        timeout -k 15s 330m bash -c '
-          while true; do
-            echo "🚀 Bot başlatılıyor..."
-            xvfb-run --auto-servernum mvn spring-boot:run
-            echo "⚠️ Bot durdu! 5 saniye içinde yeniden başlatılıyor..."
-            sleep 5
+      - name: Install Playwright Browsers and Dependencies
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            echo "Playwright kurulum denemesi: ${attempt}/2"
+            if mvn -B -ntp compile exec:java -e \
+              -Dexec.mainClass=com.microsoft.playwright.CLI \
+              -Dexec.args="install --with-deps chromium"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 2 ]; then sleep 30; fi
           done
-        ' || true
-        
-        # Süreçleri temizle
-        pkill -f spring-boot 2>/dev/null || true
-        pkill -f Xvfb 2>/dev/null || true
-      env:
-        TWITTER_SESSION_PATH: auth.json
-        TWITTER_HEADLESS: "false"
+          echo "::error::Playwright kurulumu basarisiz"
+          exit 1
 
-    - name: Auto-Trigger Next Run
-      run: |
-        echo "🔄 5.5 saatlik görev başarıyla bitti. Yeni görev anında başlatılıyor..."
-        gh workflow run bot-runner.yml --ref main
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GH_REPO: ${{ github.repository }}
+      - name: Restore Twitter Session
+        shell: bash
+        env:
+          TWITTER_SESSION_B64: ${{ secrets.TWITTER_SESSION_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TWITTER_SESSION_B64:-}" ]; then
+            echo "::error::TWITTER_SESSION_B64 eksik"
+            exit 1
+          fi
+          printf '%s' "$TWITTER_SESSION_B64" | base64 -d > auth.json
+          test -s auth.json
+          chmod 600 auth.json
+
+      - name: Run Spring Boot Application (5.5 Hours)
+        shell: bash
+        env:
+          TWITTER_SESSION_PATH: auth.json
+          TWITTER_HEADLESS: 'false'
+        run: |
+          timeout -k 15s 330m bash -c '
+            while true; do
+              echo "Bot baslatiliyor..."
+              xvfb-run --auto-servernum mvn spring-boot:run
+              echo "Bot durdu; 5 saniye sonra yeniden baslatiliyor..."
+              sleep 5
+            done
+          ' || true
+
+          pkill -f '[s]pring-boot' 2>/dev/null || true
+          pkill -f '[X]vfb' 2>/dev/null || true
+
+      - name: Auto-Trigger Next Run
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREVIOUS_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [ "$PREVIOUS_STATUS" != 'success' ]; then
+            echo "Oncesinde hata var; hizli hata dongusunu onlemek icin 2 dk bekleniyor"
+            sleep 120
+          fi
+          for attempt in 1 2 3 4 5; do
+            echo "Sonraki calisma tetikleme denemesi ${attempt}/5"
+            if gh workflow run bot-runner.yml --ref main; then
+              echo "Yeni calisma istendi"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Tetikleme basarisiz; Watchdog devralacak"
+          exit 1
