@@ -1,0 +1,113 @@
+
+name: Finans Bot - Recovery Watchdog
+
+on:
+  workflow_run:
+    workflows: ['Finans Bot - Continuous 6-Hour Run']
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: finansbot-watchdog
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check bot status and recover
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          WORKFLOW=bot-runner.yml
+
+          # Return 0 if running/queued, 1 if none, 2 if API error.
+          check_active() {
+            local status attempt count
+            for status in in_progress queued pending requested waiting; do
+              count=''
+              for attempt in 1 2 3; do
+                if count=$(gh api "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?branch=main&status=${status}&per_page=1" --jq '.total_count'); then
+                  break
+                fi
+                echo "API kontrolu hatali: ${status}, deneme ${attempt}/3"
+                sleep 5
+              done
+              if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+                echo "::error::Bot durumu dogrulanamadi; guvenlik icin yeni bot acilmiyor"
+                return 2
+              fi
+              if [ "$count" -gt 0 ]; then
+                echo "Aktif/bekleyen bot var (${status}); yeniden baslatma yok"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if check_active; then
+            exit 0
+          else
+            result=$?
+            if [ "$result" -ne 1 ]; then exit 1; fi
+          fi
+
+          # Avoid rapid restart loops after repeated failures.
+          last=''
+          last_ok=0
+          for attempt in 1 2 3; do
+            if last=$(gh api "repos/${GH_REPO}/actions/workflows/${WORKFLOW}/runs?branch=main&status=completed&per_page=1" \
+              --jq '.workflow_runs[0] | if . == null then "" else [.conclusion, .updated_at] | @tsv end'); then
+              last_ok=1
+              break
+            fi
+            echo "Son tamamlanan calisma alinamadi; deneme ${attempt}/3"
+            sleep 5
+          done
+          if [ "$last_ok" -ne 1 ]; then
+            echo "::error::Son calisma dogrulanamadi; yeni bot acilmiyor"
+            exit 1
+          fi
+
+          if [ -n "$last" ]; then
+            IFS=$'\t' read -r conclusion updated_at <<< "$last"
+            if [ "$conclusion" != 'success' ]; then
+              last_ts=$(date -u -d "$updated_at" +%s)
+              now_ts=$(date -u +%s)
+              if [ $((now_ts - last_ts)) -lt 300 ]; then
+                echo "Son calisma basarisiz; 5 dakikalik soguma suresi bekleniyor"
+                exit 0
+              fi
+            fi
+          fi
+
+          # Check again before dispatch to reduce duplicate requests.
+          if check_active; then
+            exit 0
+          else
+            result=$?
+            if [ "$result" -ne 1 ]; then exit 1; fi
+          fi
+
+          echo "Bot yok, kurtarma tetikleniyor"
+          for attempt in 1 2 3; do
+            if gh workflow run "$WORKFLOW" --ref main; then
+              echo "Kurtarma calismasi istendi"
+              exit 0
+            fi
+            echo "Tetikleme hatasi, deneme ${attempt}/3"
+            sleep 20
+          done
+          echo "::error::Watchdog tetikleme hatasi"
+          exit 1
